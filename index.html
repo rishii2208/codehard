@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Core | Project Reactor</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;500;700&display=swap');
+
+        :root {
+            --neon-blue: #00f3ff;
+            --neon-purple: #bc13fe;
+            --neon-orange: #ff9d00;
+            --glass-bg: rgba(20, 20, 30, 0.6);
+            --glass-border: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            margin: 0; background-color: #020205; color: #fff; font-family: 'Rajdhani', sans-serif; overflow: hidden;
+        }
+
+        /* --- LAYERS --- */
+        #webgl-background { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; }
+        #css3d-foreground { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; padding: 2rem; box-sizing: border-box; }
+
+        header h1 { margin: 0; font-size: 3rem; text-transform: uppercase; letter-spacing: 0.2rem; background: linear-gradient(90deg, var(--neon-blue), #fff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 20px rgba(0, 243, 255, 0.5); }
+
+        /* --- WEBCAM FEED --- */
+        #video-container { position: absolute; bottom: 20px; right: 20px; width: 160px; height: 120px; border: 1px solid var(--neon-blue); border-radius: 10px; overflow: hidden; z-index: 20; transform: scaleX(-1); opacity: 0.7; pointer-events: auto; transition: opacity 0.5s ease; }
+        #video-container.denied { opacity: 0.1; pointer-events: none; border-color: red;}
+        #video-container.idle { opacity: 0.3; border-color: var(--neon-purple); }
+        video { width: 100%; height: 100%; object-fit: cover; }
+
+        /* --- GESTURE INSTRUCTIONS --- */
+        .gesture-panel { position: absolute; top: 50%; left: 2rem; transform: translateY(-50%); background: rgba(0,0,0,0.6); border-left: 2px solid var(--neon-blue); padding: 1rem; pointer-events: auto; transition: all 0.3s ease; }
+        .gesture-panel.auto-mode { border-left-color: var(--neon-purple); }
+        .gesture-panel.stuck-mode { border-left-color: var(--neon-orange); }
+        .instruction { margin-bottom: 5px; font-size: 0.9rem; color: #ccc; }
+        .active-gesture { color: var(--neon-blue); font-weight: bold; text-shadow: 0 0 10px var(--neon-blue); }
+
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: var(--neon-blue); font-size: 1.5rem; font-weight: bold; z-index: 100; text-align: center; }
+
+        /* --- PROJECT CARDS --- */
+        .project-card-container { pointer-events: auto; }
+        .project-card { width: 320px; height: 200px; background: var(--glass-bg); backdrop-filter: blur(10px); border: 1px solid var(--glass-border); border-top: 3px solid var(--neon-blue); padding: 25px; box-sizing: border-box; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); transition: all 0.3s ease; cursor: pointer; display: flex; flex-direction: column; justify-content: center; position: relative; overflow: hidden; }
+        .project-card::before { content: ''; position: absolute; top:0; left:0; width: 100%; height: 100%; background: linear-gradient(45deg, transparent, rgba(0, 243, 255, 0.1), transparent); transform: translateX(-100%); transition: 0.5s; }
+        .project-card:hover { border-top-color: #fff; box-shadow: 0 0 40px rgba(0, 243, 255, 0.4); transform: translateY(-5px) scale(1.02); }
+        .project-card:hover::before { transform: translateX(100%); }
+        .project-title { font-size: 1.4rem; font-weight: 700; color: #fff; text-transform: uppercase; margin-bottom: 10px;}
+        .project-desc { font-size: 0.9rem; color: #ccc; line-height: 1.4; }
+        .project-number { position: absolute; bottom: 10px; right: 15px; font-size: 3rem; opacity: 0.05; font-weight: 800; color: var(--neon-blue);}
+    </style>
+</head>
+<body>
+
+    <div id="loading">INITIALIZING CORE SYSTEM...<br><span style="font-size:0.8em; color:#666;">Please allow camera for interactive mode.</span></div>
+
+    <div id="ui-layer">
+        <header><h1>Project Core</h1></header>
+        <div class="gesture-panel" id="gesturePanel">
+            <div id="gestureTitle" style="margin-bottom:10px; color:#fff; font-weight:bold;">INTERACTIVE MODE</div>
+            <div class="instruction" id="g-tunnel">✋ Open Hand: Warp Tunnel</div>
+            <div class="instruction" id="g-cosmicedge">☝️ 1 Finger: Cosmic Edge</div>
+            <div class="instruction" id="g-planes">✌️ 2 Fingers: Cyber Planes</div>
+            <div class="instruction" id="g-fleet">✊ Fist: Space Fleet</div>
+        </div>
+    </div>
+
+    <div id="video-container"><video id="input-video" playsinline></video></div>
+    <div id="webgl-background"></div>
+    <div id="css3d-foreground"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
+
+        // --- GLOBAL VARIABLES ---
+        let webglScene, webglCamera, webglRenderer;
+        let cssScene, cssCamera, cssRenderer;
+        let particles, particleGeo, targetPositions;
+        const PARTICLE_COUNT = 30000; 
+        let currentShape = 'tunnel';
+        
+        let handPosition = new THREE.Vector3(1000, 1000, 0);
+        let isHandPresent = false;
+        let cameraDenied = false;
+        
+        // --- TIMERS & STATE ---
+        let idleTimer = null;
+        let autoInterval = null;
+        let isAutoMode = false;
+        const IDLE_THRESHOLD = 10000; // 10s wait for auto mode
+        const AUTO_CYCLE_SPEED = 10000; // 10s per cycle in auto mode
+
+        // --- STUCK GUARD ---
+        let lastShapeTime = Date.now();
+        const STUCK_THRESHOLD = 30000; // 30s stuck limit
+        let gestureLockout = 0; // Timestamp to ignore hands
+
+        const shapeList = ['tunnel', 'cosmicedge', 'planes', 'fleet'];
+        let shapeIndex = 0;
+
+        const clock = new THREE.Clock();
+
+        // --- UPDATED PROJECT LIST ---
+        const projects = [
+            { title: "Slander", url: "https://slander.live", desc: "Real-time anonymous chat application platform." },
+            { title: "Posts AI", url: "https://posts-three-nu.vercel.app/", desc: "Generates detailed hiring LinkedIn posts automatically." },
+            { title: "Rizzum ATS", url: "https://rizzum-client.vercel.app/", desc: "Optimizes resumes to 100% ATS score based on job roles." },
+            { title: "3JS Playground", url: "https://github.com/rishii2208/3Js_Playground", desc: "Collection of personal 3D experiments and learning projects." },
+            { title: "REST API Fund.", url: "https://github.com/rishii2208/REST_API", desc: "Core implementation of RESTful API fundamentals." },
+            { title: "Fraud Detect", url: "https://github.com/rishikumar1812/PUBLIC_API", desc: "Hackathon 2nd Prize: ML-based financial fraud detection system." },
+            { title: "EmphaticAI", url: "https://github.com/rishii2208/emphatic_AI", desc: "AI code reviewer that provides deep feedback and analysis." },
+            { title: "Invisible Keybd", url: "https://github.com/rishii2208/Invisible-Keyboard", desc: "Computer Vision project: Type using hand movements in air." },
+            { title: "Soulchain", url: "https://devfolio.co/projects/soulchain-safe-secure-and-stigmafree-ee8c", desc: "Decentralized mental wellness DApp. Award-winning project." },
+            { title: "AI MindMapper", url: "https://github.com/rishii2208/AIMindMapper", desc: "Converts text conversations into interactive mindmaps." },
+            { title: "Rishii.xyz", url: "https://rishii.xyz", desc: "My personal 3D portfolio website." },
+            
+            // Kept existing projects as requested
+            { title: "Coming Soon", url: "#", desc: "Automated data extraction tool for market analysis." },
+            { title: "Coming Soon", url: "#", desc: "Regex engine to sort incoming invoices." },
+            { title: "Coming Soon", url: "#", desc: "Express server for frontend prototyping." },
+            { title: "Coming Soon", url: "#", desc: "Bulk image processing pipeline using Node.js." }
+        ];
+
+        init();
+        initMediaPipe();
+        animate();
+
+        function init() {
+            // WEBGL
+            const bgContainer = document.getElementById('webgl-background');
+            webglScene = new THREE.Scene();
+            webglScene.fog = new THREE.FogExp2(0x000000, 0.01); 
+            webglCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+            webglCamera.position.z = 30;
+
+            webglRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            webglRenderer.setSize(window.innerWidth, window.innerHeight);
+            bgContainer.appendChild(webglRenderer.domElement);
+            createParticles();
+
+            // CSS3D
+            const fgContainer = document.getElementById('css3d-foreground');
+            cssScene = new THREE.Scene();
+            cssCamera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 1, 10000);
+            cssCamera.position.set(0, 200, 2800); 
+            cssCamera.lookAt(0, 0, 0);
+
+            cssRenderer = new CSS3DRenderer();
+            cssRenderer.setSize(window.innerWidth, window.innerHeight);
+            fgContainer.appendChild(cssRenderer.domElement);
+            createCylinder();
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function createParticles() {
+            particleGeo = new THREE.BufferGeometry();
+            const positions = new Float32Array(PARTICLE_COUNT * 3);
+            const colors = new Float32Array(PARTICLE_COUNT * 3);
+            targetPositions = new Float32Array(PARTICLE_COUNT * 3);
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                positions[i * 3] = (Math.random() - 0.5) * 200;
+                positions[i * 3 + 1] = (Math.random() - 0.5) * 200;
+                positions[i * 3 + 2] = (Math.random() - 0.5) * 200;
+
+                colors[i * 3] = 0.8 + Math.random() * 0.2; 
+                colors[i * 3 + 1] = 0.9 + Math.random() * 0.1; 
+                colors[i * 3 + 2] = 1.0; 
+            }
+
+            particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            particleGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+            const material = new THREE.PointsMaterial({
+                size: 0.15, vertexColors: true, blending: THREE.AdditiveBlending,
+                transparent: true, opacity: 0.6, depthWrite: false
+            });
+
+            particles = new THREE.Points(particleGeo, material);
+            webglScene.add(particles);
+            setTargetShape('tunnel');
+        }
+
+        function createCylinder() {
+            const radius = 1100;
+            const totalItems = projects.length;
+            const angleStep = (Math.PI * 2) / totalItems;
+
+            for (let i = 0; i < totalItems; i++) {
+                const element = document.createElement('div');
+                element.className = 'project-card-container';
+                element.innerHTML = `
+                    <div class="project-card">
+                        <div class="project-number">${(i + 1).toString().padStart(2, '0')}</div>
+                        <div class="project-title">${projects[i].title}</div>
+                        <div class="project-desc">${projects[i].desc}</div>
+                    </div>
+                `;
+                
+                // --- CLICK HANDLER UPDATE ---
+                // Opens the URL in a new tab when clicked
+                element.querySelector('.project-card').onclick = (e) => {
+                    e.stopPropagation();
+                    if(projects[i].url && projects[i].url !== "#") {
+                        window.open(projects[i].url, '_blank');
+                    } else {
+                        alert(`Opening details for: ${projects[i].title}`);
+                    }
+                };
+
+                const object = new CSS3DObject(element);
+                const theta = i * angleStep;
+                object.position.setFromCylindricalCoords(radius, theta, 0);
+                object.lookAt(new THREE.Vector3(0, 0, 0));
+                object.rotation.y += Math.PI; 
+                cssScene.add(object);
+            }
+        }
+
+        function setTargetShape(type) {
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                let x, y, z;
+                const idx = i * 3;
+
+                if (type === 'tunnel') {
+                    const r = 25 + Math.random() * 30; 
+                    const theta = Math.random() * Math.PI * 2;
+                    x = r * Math.cos(theta); y = r * Math.sin(theta); z = (Math.random() - 0.5) * 200; 
+                }
+                else if (type === 'cosmicedge') {
+                    const edgeBias = 1 - Math.pow(Math.random(), 5);
+                    x = 300 - (edgeBias * 500); 
+                    y = (Math.random() - 0.5) * 400;
+                    z = (Math.random() - 0.5) * 400;
+                }
+                else if (type === 'planes') {
+                    const isTop = i % 2 === 0;
+                    x = (Math.random() - 0.5) * 250; z = (Math.random() - 0.5) * 250; 
+                    const baseHeight = isTop ? 50 : -50;
+                    y = baseHeight + (Math.random() - 0.5) * 10; 
+                }
+                else if (type === 'fleet') {
+                    const ratio = i / PARTICLE_COUNT; 
+                    const widthSpread = 300 * ratio; 
+                    x = (Math.random() - 0.5) * widthSpread;
+                    y = (Math.random() - 0.5) * 30;
+                    const startZ = -200 - (ratio * 800);
+                    z = startZ;
+                }
+
+                targetPositions[idx] = x;
+                targetPositions[idx + 1] = y;
+                targetPositions[idx + 2] = z;
+            }
+        }
+
+        function initMediaPipe() {
+            const videoElement = document.getElementById('input-video');
+            const loading = document.getElementById('loading');
+
+            const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+            hands.setOptions({maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5});
+            hands.onResults(onHandsResults);
+
+            const camera = new Camera(videoElement, {
+                onFrame: async () => await hands.send({image: videoElement}),
+                width: 640, height: 480
+            });
+
+            camera.start().then(() => {
+                loading.style.display = 'none';
+                resetIdleTimer(); 
+            }).catch(err => {
+                loading.innerHTML = "CAMERA DENIED.<br>ENGAGING AUTO-PILOT.";
+                setTimeout(() => loading.style.display = 'none', 2000);
+                cameraDenied = true;
+                startAutoShapeCycle();
+            });
+        }
+
+        // --- IDLE / AUTO MODE LOGIC ---
+        function resetIdleTimer() {
+            if (isAutoMode) stopAutoShapeCycle();
+            if (idleTimer) clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => { startAutoShapeCycle(); }, IDLE_THRESHOLD);
+        }
+
+        function startAutoShapeCycle() {
+            isAutoMode = true;
+            const videoContainer = document.getElementById('video-container');
+            if(!cameraDenied) videoContainer.classList.add('idle');
+            
+            const panel = document.getElementById('gesturePanel');
+            panel.classList.add('auto-mode');
+            const title = document.getElementById('gestureTitle');
+            title.innerHTML = 'AUTO-PILOT ACTIVE';
+            title.style.color = 'var(--neon-purple)';
+
+            if (autoInterval) clearInterval(autoInterval);
+            autoInterval = setInterval(() => {
+                advanceShape();
+            }, AUTO_CYCLE_SPEED);
+        }
+
+        function stopAutoShapeCycle() {
+            isAutoMode = false;
+            if (autoInterval) clearInterval(autoInterval);
+            const videoContainer = document.getElementById('video-container');
+            videoContainer.classList.remove('idle');
+            const panel = document.getElementById('gesturePanel');
+            panel.classList.remove('auto-mode');
+            const title = document.getElementById('gestureTitle');
+            title.innerHTML = 'INTERACTIVE MODE';
+            title.style.color = '#fff';
+        }
+        
+        function advanceShape() {
+            shapeIndex = (shapeIndex + 1) % shapeList.length;
+            const newShape = shapeList[shapeIndex];
+            currentShape = newShape;
+            setTargetShape(newShape);
+            lastShapeTime = Date.now(); // Reset stuck timer
+        }
+
+        function onHandsResults(results) {
+            if (cameraDenied) return;
+            
+            // Check Lockout
+            if (Date.now() < gestureLockout) return;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                resetIdleTimer();
+                isHandPresent = true;
+                
+                const landmarks = results.multiHandLandmarks[0];
+                const indexTip = landmarks[8];
+                const x = (0.5 - indexTip.x) * 40;
+                const y = (0.5 - indexTip.y) * 30;
+                handPosition.x += (x - handPosition.x) * 0.2;
+                handPosition.y += (y - handPosition.y) * 0.2;
+
+                const instructions = {
+                    cosmicedge: document.getElementById('g-cosmicedge'),
+                    planes: document.getElementById('g-planes'),
+                    tunnel: document.getElementById('g-tunnel'),
+                    fleet: document.getElementById('g-fleet')
+                };
+                Object.values(instructions).forEach(el => el.classList.remove('active-gesture'));
+
+                let fingersUp = 0;
+                if (landmarks[4].y < landmarks[3].y) fingersUp++; 
+                if (landmarks[8].y < landmarks[6].y) fingersUp++;
+                if (landmarks[12].y < landmarks[10].y) fingersUp++;
+                if (landmarks[16].y < landmarks[14].y) fingersUp++;
+                if (landmarks[20].y < landmarks[18].y) fingersUp++;
+
+                let detectedShape = currentShape;
+
+                if (fingersUp === 0 || (fingersUp === 1 && landmarks[8].y > landmarks[6].y)) {
+                    detectedShape = 'fleet'; instructions.fleet.classList.add('active-gesture');
+                } else if (fingersUp === 1) {
+                    detectedShape = 'cosmicedge'; instructions.cosmicedge.classList.add('active-gesture');
+                } else if (fingersUp === 2 || fingersUp === 3) {
+                    detectedShape = 'planes'; instructions.planes.classList.add('active-gesture');
+                } else if (fingersUp >= 4) {
+                    detectedShape = 'tunnel'; instructions.tunnel.classList.add('active-gesture');
+                }
+
+                // Logic: Change OR Check for Stuck
+                if (detectedShape !== currentShape) {
+                    currentShape = detectedShape;
+                    setTargetShape(detectedShape);
+                    lastShapeTime = Date.now(); // Reset stuck timer
+                } else {
+                    // SAME SHAPE: Check duration
+                    if (Date.now() - lastShapeTime > STUCK_THRESHOLD) {
+                        advanceShape();
+                        gestureLockout = Date.now() + 4000;
+                        const title = document.getElementById('gestureTitle');
+                        const panel = document.getElementById('gesturePanel');
+                        const prevHTML = title.innerHTML;
+                        const prevColor = title.style.color;
+                        title.innerHTML = 'AUTO-SWAPPING...';
+                        title.style.color = 'var(--neon-orange)';
+                        panel.classList.add('stuck-mode');
+                        setTimeout(() => {
+                            title.innerHTML = prevHTML;
+                            title.style.color = prevColor;
+                            panel.classList.remove('stuck-mode');
+                        }, 4000);
+                    }
+                }
+            } else { 
+                isHandPresent = false; 
+            }
+        }
+
+        function onWindowResize() {
+            const width = window.innerWidth; const height = window.innerHeight;
+            webglCamera.aspect = width / height; webglCamera.updateProjectionMatrix(); webglRenderer.setSize(width, height);
+            cssCamera.aspect = width / height; cssCamera.updateProjectionMatrix(); cssRenderer.setSize(width, height);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = clock.getElapsedTime();
+
+            // Particles Update Loop
+            const positions = particleGeo.attributes.position.array;
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const idx = i * 3;
+                let px = positions[idx], py = positions[idx+1], pz = positions[idx+2];
+                let tx = targetPositions[idx], ty = targetPositions[idx+1], tz = targetPositions[idx+2];
+
+                if (currentShape === 'planes') {
+                    ty += Math.sin(tx * 0.05 + time) * 5 + Math.cos(tz * 0.05 + time) * 5; 
+                } 
+                else if (currentShape === 'fleet') {
+                    const flySpeed = 3.5; tz += flySpeed; 
+                    if (tz > 100) tz = -1000 - Math.random() * 300;
+                    targetPositions[idx+2] = tz;
+                }
+
+                const morphSpeed = currentShape === 'cosmicedge' ? 0.02 : (currentShape === 'fleet' ? 0.1 : 0.03);
+                px += (tx - px) * morphSpeed; 
+                py += (ty - py) * morphSpeed; 
+                pz += (tz - pz) * morphSpeed;
+
+                if (isHandPresent && !cameraDenied && currentShape !== 'cosmicedge') {
+                    const dx = px - handPosition.x; const dy = py - handPosition.y; const dz = pz - handPosition.z;
+                    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                    if (dist < 10) {
+                        const force = (10 - dist) / 10;
+                        px += dx * force * 1.5; py += dy * force * 1.5; pz += dz * force * 1.5;
+                    }
+                }
+                positions[idx] = px; positions[idx+1] = py; positions[idx+2] = pz;
+            }
+            particleGeo.attributes.position.needsUpdate = true;
+            
+            if (currentShape === 'tunnel') {
+                 particles.rotation.z += 0.002; particles.rotation.y *= 0.95; 
+            } else if (currentShape === 'planes') { 
+                particles.rotation.y = Math.sin(time * 0.1) * 0.05; particles.rotation.z *= 0.95;
+            } else if (currentShape === 'fleet') {
+                particles.rotation.x = 0.1; particles.rotation.y *= 0.95; particles.rotation.z *= 0.95;
+            } else if (currentShape === 'cosmicedge') {
+                particles.rotation.y += 0.0005; particles.rotation.z += 0.0002;
+            }
+            else {
+                particles.rotation.y += 0.001; particles.rotation.z *= 0.95;
+            }
+
+            webglRenderer.render(webglScene, webglCamera);
+
+            cssScene.rotation.y -= 0.0025; 
+            cssRenderer.render(cssScene, cssCamera);
+        }
+    </script>
+</body>
+</html>
